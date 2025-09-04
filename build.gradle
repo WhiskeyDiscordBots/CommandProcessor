@@ -1,0 +1,56 @@
+plugins {
+    id 'java'
+    id 'java-library' // For a Java library project
+    id 'maven-publish' // For publishing to Maven repositories
+}
+
+group = 'com.github.mirko0'
+version = '0.0.2'
+description = 'Annotation Command Processor for Discord Java API'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly("net.dv8tion:JDA:6.0.0-rc.3")
+}
+
+// Configure Javadoc generation
+javadoc {
+    options.encoding = 'UTF-8' // Ensure proper encoding
+    options.charSet = 'UTF-8'
+    options.addStringOption('Xdoclint:none', '-quiet') // Suppress strict doclint warnings (optional)
+}
+// Create a Javadoc JAR
+tasks.register('javadocJar', Jar) {
+    archiveClassifier = 'javadoc'
+    from javadoc.destinationDir
+    dependsOn javadoc
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java // Publishes the main JAR
+            artifact javadocJar // Publishes the Javadoc JAR
+            groupId = project.group
+            artifactId = 'command-processor'
+            version = project.version
+            pom {
+                name = 'Command Processor'
+                description = project.description
+                url = 'https://github.com/mirko0/commandprocessor'
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+            }
+        }
+    }
+    repositories {
+        mavenLocal() // Publishes to ~/.m2/repository
+    }
+}
