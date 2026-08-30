@@ -1,318 +1,452 @@
 package com.github.mirko0.commandprocessor;
 
-import com.github.mirko0.commandprocessor.annotations.*;
+import com.github.mirko0.commandprocessor.definitions.CommandDefinition;
+import com.github.mirko0.commandprocessor.help.HelpCommand;
+import com.github.mirko0.commandprocessor.help.HelpInteractionListener;
+import com.github.mirko0.commandprocessor.help.HelpModel;
+import com.github.mirko0.commandprocessor.definitions.MessageCommandDefinition;
+import com.github.mirko0.commandprocessor.internal.CategoryRegistry;
+import com.github.mirko0.commandprocessor.internal.CommandParser;
+import com.github.mirko0.commandprocessor.internal.TriggerIndex;
+import com.github.mirko0.commandprocessor.message.MessageCommandConfig;
+import com.github.mirko0.commandprocessor.message.MessageCommandHandler;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.Guild;
-import net.dv8tion.jda.api.interactions.DiscordLocale;
-import net.dv8tion.jda.api.interactions.IntegrationType;
-import net.dv8tion.jda.api.interactions.InteractionContextType;
-import net.dv8tion.jda.api.interactions.commands.Command;
-import net.dv8tion.jda.api.interactions.commands.DefaultMemberPermissions;
-import net.dv8tion.jda.api.interactions.commands.build.*;
+import net.dv8tion.jda.api.interactions.commands.build.CommandData;
 import net.dv8tion.jda.api.sharding.ShardManager;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Method;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Processes and manages Discord slash commands for a Discord bot.
- * Handles command registration, parsing, and management for both global and guild-specific commands.
+ * Parses annotated command classes, registers them with Discord, and dispatches interactions to
+ * them.
+ *
+ * <p>Typical use on a sharded bot:
+ *
+ * <pre>{@code
+ * new CommandProcessor(commands, true, List.of(
+ *         CommandCategory.of("music", "Music").withEmoji("🎵").withOrder(1),
+ *         CommandCategory.of("moderation", "Moderation").withOrder(2)))
+ *     .registerAll(shardManager);
+ * }</pre>
+ *
+ * <p>Thread-safety: build on one thread, then read from any. The command map is concurrent, and the
+ * dispatcher is only created once every command has been parsed.
+ *
+ * @since 0.0.1
  */
-public class CommandProcessor {
+public final class CommandProcessor {
     private static final Logger log = LoggerFactory.getLogger(CommandProcessor.class);
-    private static final int MAX_REGISTRATION_RETRIES = 3;
-    private static final long RETRY_DELAY_MS = 5000;
 
-    private final ShardManager shardManager;
-    private final JDA jda;
-    private final Map<String, CommandDefinition> commandMap;
+    private final Map<String, CommandDefinition> commandMap = new ConcurrentHashMap<>();
+
     private final SlashCommandHandler slashCommandHandler;
+    private final HelpInteractionListener helpListener;
+    private final MessageCommandHandler messageCommandHandler;
+    private final MessageCommandConfig messageCommandConfig;
+    private final TriggerIndex triggerIndex;
 
     /**
-     * Creates a CommandProcessor for a sharded bot.
+     * Assigned after every command has been parsed, because it is derived from them.
      *
-     * @param shardManager ShardManager instance
-     * @param commands     List of commands to register
+     * <p>Not final: the help model is handed a supplier of this field and has to be built first, so
+     * that the help command itself is one of the commands parsed. Volatile for safe publication —
+     * the dispatcher reads it from JDA event threads.
      */
-    public CommandProcessor(ShardManager shardManager, List<QCommandBase> commands) {
-        this(commands, null, shardManager);
+    private volatile CategoryRegistry categories;
+
+    /**
+     * Creates a processor with the built-in help command and no declared categories.
+     *
+     * @param  commands the commands to register; not modified
+     * @throws NullPointerException if {@code commands} is null
+     */
+    public CommandProcessor(@NotNull Collection<? extends QCommandBase> commands) {
+        this(commands, true, List.of());
     }
 
     /**
-     * Creates a CommandProcessor for a non-sharded bot.
+     * Creates a processor with no declared categories.
      *
-     * @param jda      JDA instance
-     * @param commands List of commands to register
+     * @param  commands    the commands to register; not modified
+     * @param  helpCommand whether to add the built-in {@code /help}
+     * @throws NullPointerException if {@code commands} is null
      */
-    public CommandProcessor(JDA jda, List<QCommandBase> commands) {
-        this(commands, jda, null);
+    public CommandProcessor(@NotNull Collection<? extends QCommandBase> commands, boolean helpCommand) {
+        this(commands, helpCommand, List.of());
     }
 
     /**
-     * Main constructor for CommandProcessor.
+     * Creates a processor.
      *
-     * @param commands     List of commands to register
-     * @param jda          JDA instance (null if using ShardManager)
-     * @param shardManager ShardManager instance (null if using single JDA)
+     * @param  commands    the commands to register; <strong>not modified</strong>
+     * @param  helpCommand whether to add the built-in {@code /help}. Pass {@code false} if you
+     *                     provide your own — two commands cannot share a name
+     * @param  categories  the categories commands refer to with
+     *                     {@link com.github.mirko0.commandprocessor.annotations.Category @Category};
+     *                     an id used by a command but not declared here still forms a category,
+     *                     with a warning
+     * @throws NullPointerException if {@code commands} is null
+     * @since  0.1.0
      */
-    public CommandProcessor(List<QCommandBase> commands, JDA jda, ShardManager shardManager) {
-        this.shardManager = shardManager;
-        this.jda = jda;
-        this.commandMap = new HashMap<>();
+    public CommandProcessor(@NotNull Collection<? extends QCommandBase> commands,
+                            boolean helpCommand,
+                            @Nullable Collection<CommandCategory> categories) {
+        this(commands, helpCommand, categories, null);
+    }
+
+    /**
+     * Creates a processor, optionally with message commands.
+     *
+     * @param  commands        the commands to register; <strong>not modified</strong>
+     * @param  helpCommand     whether to add the built-in {@code /help}
+     * @param  categories      the categories commands refer to with {@code @Category}
+     * @param  messageCommands turns message commands on and says how they are triggered; null
+     *                         leaves the feature entirely off, attaching no listener and building
+     *                         no trigger index
+     * @throws NullPointerException if {@code commands} is null
+     * @see    Builder
+     * @since  0.3.0
+     */
+    public CommandProcessor(@NotNull Collection<? extends QCommandBase> commands,
+                            boolean helpCommand,
+                            @Nullable Collection<CommandCategory> categories,
+                            @Nullable MessageCommandConfig messageCommands) {
+        Objects.requireNonNull(commands, "commands");
+
+        // A copy: adding the help command to the caller's list throws on List.of(...) and, under
+        // Spring, mutates a collection the container owns.
+        List<QCommandBase> all = new ArrayList<>(commands);
+
+        HelpModel helpModel = new HelpModel(() -> commandMap, () -> this.categories);
+        if (helpCommand) all.add(new HelpCommand(helpModel));
+
+        register(all);
+
+        this.categories = CategoryRegistry.of(categories, commandMap.values());
         this.slashCommandHandler = new SlashCommandHandler(commandMap);
-        register(commands);
-        if (shardManager != null) shardManager.addEventListener(slashCommandHandler);
-        else jda.addEventListener(slashCommandHandler);
-        log.info("Command processor initialized with {} commands", commandMap.size());
+        this.helpListener = helpCommand ? new HelpInteractionListener(helpModel) : null;
+
+        this.messageCommandConfig = messageCommands;
+        this.triggerIndex = messageCommands == null
+                ? TriggerIndex.empty()
+                : TriggerIndex.of(all, messageCommands);
+        this.messageCommandHandler = triggerIndex.isEmpty()
+                ? null
+                : new MessageCommandHandler(triggerIndex.triggers(), messageCommands);
+
+        log.info("Command processor initialized with {} commands in {} categories{}",
+                commandMap.size(), this.categories.all().size(),
+                triggerIndex.isEmpty() ? "" : ", " + triggerIndex.triggers().size() + " message triggers");
     }
 
     /**
-     * Registers global and guild-specific commands.
+     * Starts building a processor.
+     *
+     * <p>Preferred over the constructors once more than the commands and the help flag are involved.
+     *
+     * @return a new builder
+     * @since  0.3.0
      */
-    private void register(List<QCommandBase> commands) {
-        Map<String, Set<CommandData>> guildCommands = new HashMap<>();
-        Set<CommandData> globalCommands = new HashSet<>();
+    @NotNull
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Registers the provided commands.
+     *
+     * <p>A command that cannot be parsed is reported and skipped. It used to take the constructor -
+     * and so the whole application's startup - down with it, which meant one bad description
+     * stopped every other command in the bot from existing.
+     *
+     * @param commands the commands to register; not modified
+     */
+    public void register(@NotNull Collection<? extends QCommandBase> commands) {
+        Objects.requireNonNull(commands, "commands");
 
         for (QCommandBase command : commands) {
-            CommandDefinition cmdDef = parseCommand(command);
-            if (cmdDef == null) continue;
-
-            commandMap.put(cmdDef.getName(), cmdDef);
-            if (cmdDef.getGuildId() == null || cmdDef.getGuildId().isEmpty()) {
-                globalCommands.add(cmdDef.getCommandData());
-            }else {
-                guildCommands.computeIfAbsent(cmdDef.getGuildId(), k -> new HashSet<>()).add(cmdDef.getCommandData());
-            }
-        }
-
-        registerGlobalCommands(globalCommands);
-        registerGuildCommands(guildCommands);
-    }
-
-    /**
-     * Parses command class and creates a CommandDefinition object.
-     */
-    private CommandDefinition parseCommand(QCommandBase command) {
-        Class<?> clazz = command.getClass();
-        CommandInfo info = clazz.getAnnotation(CommandInfo.class);
-        if (info == null) return null;
-
-        CommandDefinition cmdDef = new CommandDefinition();
-        cmdDef.setName(info.name().toLowerCase());
-        cmdDef.setInstance(command);
-        cmdDef.setGuildId(info.guildId());
-        cmdDef.setNSFW(info.nsfw());
-        cmdDef.setLocalizedNames(info.localizedNames());
-        cmdDef.setLocalizedDescriptions(info.localizedDescriptions());
-        cmdDef.setDescription(info.description());
-
-        SlashCommandData data = Commands.slash(
-                info.name().toLowerCase().replaceAll("[^a-z0-9-]", "").substring(0, Math.min(32, info.name().length())),
-                info.description().substring(0, Math.min(100, info.description().length()))
-        );
-        data.setNSFW(info.nsfw());
-
-        if (info.localizedNames() != null && info.localizedNames().length > 0) data.setNameLocalizations(ProcessorUtility.getLocalizedEntries(info.localizedNames()));
-        if (info.localizedDescriptions() != null && info.localizedDescriptions().length > 0) data.setDescriptionLocalizations(ProcessorUtility.getLocalizedEntries(info.localizedDescriptions()));
-        if (info.contextType() != InteractionContextType.UNKNOWN) data.setContexts(info.contextType());
-        if (info.integrationType() != IntegrationType.UNKNOWN) data.setIntegrationTypes(info.integrationType());
-        if (info.permissions().length > 0) {
-            data.setDefaultPermissions(DefaultMemberPermissions.enabledFor(info.permissions()));
-        }
-        cmdDef.setCommandData(data);
-
-        Map<String, SubcommandGroupDefinition> groupDefMap = parseSubcommandGroups(info);
-        List<SubcommandDefinition> subcommands = new ArrayList<>();
-        OptionData[] defOptions = null;
-        boolean hadSubCommands = false;
-
-        for (Method method : clazz.getDeclaredMethods()) {
-            if (method.isAnnotationPresent(CommandHandler.class)) {
-                defOptions = parseOptions(method);
-                cmdDef.setHandlerMethod(method);
-                cmdDef.setDefaultResponse(method.getAnnotation(CommandHandler.class).defaultResponse());
-            }
-
-            SubCommandHandler subAnno = method.getAnnotation(SubCommandHandler.class);
-            if (subAnno != null) {
-                hadSubCommands = true;
-                SubcommandDefinition subDef = new SubcommandDefinition();
-                subDef.setName(subAnno.name().toLowerCase());
-                subDef.setDescription(subAnno.description());
-                subDef.setLocalizedNames(subAnno.localizedNames());
-                subDef.setLocalizedDescriptions(subAnno.localizedDescriptions());
-                subDef.setHandlerMethod(method);
-                subDef.setDefaultResponse(subAnno.defaultResponse());
-
-                OptionData[] opts = parseOptions(method);
-                SubcommandData subData = new SubcommandData(subDef.getName(), subAnno.description()).addOptions(opts);
-                if (subAnno.localizedNames() != null && subAnno.localizedNames().length > 0) subData.setNameLocalizations(ProcessorUtility.getLocalizedEntries(subAnno.localizedNames()));
-                if (subAnno.localizedDescriptions() != null && subAnno.localizedDescriptions().length > 0) subData.setDescriptionLocalizations(ProcessorUtility.getLocalizedEntries(subAnno.localizedDescriptions()));
-
-                Group groupAnno = method.getAnnotation(Group.class);
-                if (groupAnno != null) {
-                    String groupName = groupAnno.value().toLowerCase();
-                    SubcommandGroupDefinition groupDef = groupDefMap.get(groupName);
-                    if (groupDef != null) {
-                        groupDef.getSubcommands().add(subDef);
-                        SubcommandGroupData subGroupData = new SubcommandGroupData(groupName, groupDefMap.get(groupName).getDescription());
-                        subGroupData.addSubcommands(subData);
-                        if (groupDef.getLocalizedNames() != null && groupDef.getLocalizedNames().length > 0) subGroupData.setNameLocalizations(ProcessorUtility.getLocalizedEntries(groupDef.getLocalizedNames()));
-                        if (groupDef.getLocalizedDescriptions() != null && groupDef.getLocalizedDescriptions().length > 0) subGroupData.setDescriptionLocalizations(ProcessorUtility.getLocalizedEntries(groupDef.getLocalizedDescriptions()));
-                        data.addSubcommandGroups(subGroupData);
-                    }
-                }else {
-                    subcommands.add(subDef);
-                    data.addSubcommands(subData);
+            if (command == null) continue;
+            try {
+                CommandDefinition cmdDef = CommandParser.parseCommand(command);
+                if (cmdDef == null) {
+                    log.warn("{} implements QCommandBase but carries no @CommandInfo, so it was skipped.",
+                            command.getClass().getName());
+                    continue;
                 }
+
+                CommandDefinition previous = commandMap.putIfAbsent(cmdDef.getName(), cmdDef);
+                if (previous != null) {
+                    log.warn("Two commands are named '{}' ({} and {}). Keeping the first; the second "
+                                    + "is ignored.",
+                            cmdDef.getName(),
+                            previous.getInstance().getClass().getSimpleName(),
+                            command.getClass().getSimpleName());
+                }
+            } catch (RuntimeException failure) {
+                log.error("Could not register command {}; skipping it.",
+                        command.getClass().getName(), failure);
             }
         }
-
-        cmdDef.setSubcommands(subcommands);
-        cmdDef.setGroups(groupDefMap);
-        if (!hadSubCommands && defOptions != null) {
-            data.addOptions(defOptions);
-        }
-
-        return cmdDef;
     }
 
     /**
-     * Parses subcommand groups from command info.
+     * Registers the dispatcher, and the help listener when the built-in help command is enabled.
+     *
+     * @param jda the shard to listen on
      */
-    private Map<String, SubcommandGroupDefinition> parseSubcommandGroups(CommandInfo info) {
-        Map<String, SubcommandGroupDefinition> groupDefMap = new HashMap<>();
-        for (SubCommandGroupInfo groupInfo : info.groups()) {
-            SubcommandGroupDefinition groupDef = new SubcommandGroupDefinition();
-            groupDef.setLocalizedNames(groupInfo.localizedNames());
-            groupDef.setLocalizedDescriptions(groupInfo.localizedDescriptions());
-            groupDef.setName(groupInfo.name().toLowerCase());
-            groupDef.setDescription(groupInfo.description());
-            groupDef.setSubcommands(new ArrayList<>());
-            groupDefMap.put(groupInfo.name().toLowerCase(), groupDef);
-        }
-        return groupDefMap;
-    }
-
-    /**
-     * Registers global commands with retries for each shard.
-     */
-    private void registerGlobalCommands(Set<CommandData> globalCommands) {
-        if (shardManager != null) {
-            for (JDA shard : shardManager.getShards()) {
-                registerGlobalCommandsForShard(shard, globalCommands, 0);
-            }
-        }else {
-            log.info("Registering {} global commands", globalCommands.size());
-            jda.updateCommands().addCommands(globalCommands).queue();
+    public void registerListener(@NotNull JDA jda) {
+        jda.addEventListener(slashCommandHandler);
+        if (helpListener != null) jda.addEventListener(helpListener);
+        if (messageCommandHandler != null) {
+            jda.addEventListener(messageCommandHandler);
+            triggerIndex.warnAboutIntents(jda, messageCommandConfig);
         }
     }
 
     /**
-     * Attempts to register global commands for a specific shard with retries.
+     * Registers the dispatcher, and the help listener when the built-in help command is enabled.
+     *
+     * @param shardManager the manager to listen on
      */
-    private void registerGlobalCommandsForShard(JDA shard, Set<CommandData> globalCommands, int attempt) {
-        if (attempt >= MAX_REGISTRATION_RETRIES) {
-            log.error("Failed to register global commands for shard {} after {} attempts",
-                    shard.getShardInfo().getShardId(), MAX_REGISTRATION_RETRIES);
+    public void registerListener(@NotNull ShardManager shardManager) {
+        shardManager.addEventListener(slashCommandHandler);
+        if (helpListener != null) shardManager.addEventListener(helpListener);
+        if (messageCommandHandler != null) {
+            shardManager.addEventListener(messageCommandHandler);
+            shardManager.getShards().stream().findFirst()
+                    .ifPresent(shard -> triggerIndex.warnAboutIntents(shard, messageCommandConfig));
+        }
+    }
+
+    /**
+     * Registers everything for a sharded bot: global commands, guild commands, and the listeners.
+     *
+     * <p>The one call to make from a sharded bot. Doing the three steps by hand invites the mistake
+     * of pushing the global commands once per shard.
+     *
+     * <p>Call it after the shards are ready — a guild whose shard has not connected cannot be
+     * resolved, and its guild-scoped commands are skipped with a warning.
+     *
+     * @param shardManager the shard manager
+     * @since 0.0.4
+     */
+    public void registerAll(@NotNull ShardManager shardManager) {
+        registerGlobalCommands(shardManager);
+        registerGuildCommands(shardManager);
+        registerListener(shardManager);
+    }
+
+    /**
+     * Registers global commands, once.
+     *
+     * <p>Global commands belong to the application, not to a shard: the request is
+     * {@code PUT /applications/{id}/commands} whichever shard sends it. Calling this per shard
+     * therefore sends the same payload N times on every boot and achieves nothing after the first.
+     *
+     * @param shardManager the shard manager; one of its shards is used
+     * @since 0.0.4
+     */
+    public void registerGlobalCommands(@NotNull ShardManager shardManager) {
+        JDA shard = shardManager.getShards().stream().findFirst().orElse(null);
+        if (shard == null) {
+            log.warn("No shards available; global commands were not registered.");
+            return;
+        }
+        registerGlobalCommands(shard);
+    }
+
+    /**
+     * Registers global commands through one JDA instance.
+     *
+     * <p>This replaces the application's entire set of global commands. On a sharded bot call
+     * {@link #registerGlobalCommands(ShardManager)} instead, or call this with a single shard —
+     * never once per shard.
+     *
+     * @param jda the shard to send the request on
+     */
+    public void registerGlobalCommands(@NotNull JDA jda) {
+        List<CommandData> globalCommands = commandMap.values().stream()
+                .filter(definition -> !definition.isGuildScoped())
+                .map(CommandDefinition::getCommandData)
+                .toList();
+
+        if (globalCommands.isEmpty()) {
+            log.info("No global commands to register.");
             return;
         }
 
-        if (shard.getStatus() == JDA.Status.CONNECTED || shard.getStatus().ordinal() >= JDA.Status.CONNECTED.ordinal()) {
-            log.info("Registering {} global commands for shard {}", globalCommands.size(), shard.getShardInfo().getShardId());
-            shard.updateCommands().addCommands(globalCommands).queue();
-        }else {
-            log.warn("Shard {} is not ready (status: {}), retry attempt {}/{}",
-                    shard.getShardInfo().getShardId(), shard.getStatus(), attempt + 1, MAX_REGISTRATION_RETRIES);
-
-            // Schedule retry
-            shard.getGatewayPool().schedule(() ->
-                            registerGlobalCommandsForShard(shard, globalCommands, attempt + 1),
-                    RETRY_DELAY_MS, TimeUnit.MILLISECONDS);
-        }
+        jda.updateCommands().addCommands(globalCommands).queue(
+                success -> log.info("Registered {} global command(s).", globalCommands.size()),
+                error -> log.error("Failed to register global commands", error));
     }
 
     /**
      * Registers guild-specific commands.
+     *
+     * <p>Resolves each guild through the shard manager, which searches every shard — a guild-scoped
+     * command is almost never on the shard doing the registering, so this is the overload a sharded
+     * bot wants.
+     *
+     * <p><strong>This replaces every command registered to that guild</strong>, including any put
+     * there by something other than this processor: {@code updateCommands()} is a full {@code PUT}.
+     *
+     * @param shardManager the shard manager
      */
-    private void registerGuildCommands(Map<String, Set<CommandData>> guildCommands) {
-        guildCommands.forEach((guildId, commandsData) -> {
-            Guild guild = shardManager != null ? shardManager.getGuildById(guildId) : jda.getGuildById(guildId);
+    public void registerGuildCommands(@NotNull ShardManager shardManager) {
+        registerGuildCommands(null, shardManager);
+    }
+
+    /**
+     * Registers guild-specific commands through one JDA instance.
+     *
+     * <p>Only finds guilds on that shard. On a sharded bot use
+     * {@link #registerGuildCommands(ShardManager)}.
+     *
+     * <p><strong>This replaces every command registered to that guild.</strong>
+     *
+     * @param jda the shard whose guilds to register in
+     */
+    public void registerGuildCommands(@NotNull JDA jda) {
+        registerGuildCommands(jda, null);
+    }
+
+    private void registerGuildCommands(JDA jda, ShardManager shardManager) {
+        Map<String, List<CommandData>> guildCommands = new HashMap<>();
+
+        commandMap.values().stream()
+                .filter(CommandDefinition::isGuildScoped)
+                .forEach(definition -> guildCommands
+                        .computeIfAbsent(definition.getGuildId(), id -> new ArrayList<>())
+                        .add(definition.getCommandData()));
+
+        guildCommands.forEach((guildId, commands) -> {
+            Guild guild = shardManager == null ? jda.getGuildById(guildId) : shardManager.getGuildById(guildId);
             if (guild == null) {
-                log.warn("Guild {} not found, cannot register commands", guildId);
+                log.warn("Guild {} not found, cannot register {} guild command(s). The bot is either not "
+                                + "in that guild, or its shard is not ready yet - register guild commands "
+                                + "after the shards are up.",
+                        guildId, commands.size());
                 return;
             }
-
-            registerGuildCommandsWithRetry(guild, commandsData, 0);
+            guild.updateCommands().addCommands(commands).queue(
+                    success -> log.info("Registered {} command(s) in guild {} ({}).",
+                            commands.size(), guild.getName(), guildId),
+                    error -> log.error("Failed to register commands in guild {}", guildId, error));
         });
     }
 
     /**
-     * Attempts to register guild commands with retries.
+     * Every registered command, keyed by name.
+     *
+     * @return an unmodifiable view; the underlying map is live, so it reflects later registrations
      */
-    private void registerGuildCommandsWithRetry(Guild guild, Set<CommandData> commandsData, int attempt) {
-        if (attempt >= MAX_REGISTRATION_RETRIES) {
-            log.error("Failed to register commands for guild {} after {} attempts",
-                    guild.getId(), MAX_REGISTRATION_RETRIES);
-            return;
-        }
-
-        if (shardManager != null && guild.getJDA().getStatus().ordinal() < JDA.Status.CONNECTED.ordinal()) {
-            log.warn("Shard for guild {} is not ready (status: {}), retry attempt {}/{}",
-                    guild.getId(), guild.getJDA().getStatus(), attempt + 1, MAX_REGISTRATION_RETRIES);
-
-            // Schedule retry
-            guild.getJDA().getGatewayPool().schedule(() ->
-                            registerGuildCommandsWithRetry(guild, commandsData, attempt + 1),
-                    RETRY_DELAY_MS, TimeUnit.MILLISECONDS);
-            return;
-        }
-
-        log.info("Registering {} commands for guild {} ({})", commandsData.size(), guild.getName(), guild.getId());
-        guild.updateCommands().addCommands(commandsData).queue();
+    @NotNull
+    public Map<String, CommandDefinition> getCommandMap() {
+        return Collections.unmodifiableMap(commandMap);
     }
 
     /**
-     * Parses command options from method parameters.
+     * Every category in use, in display order.
+     *
+     * @return an unmodifiable list
+     * @since  0.1.0
      */
-    private OptionData[] parseOptions(Method method) {
-        return Arrays.stream(method.getParameters())
-                .filter(p -> p.isAnnotationPresent(CommandOption.class))
-                .map(p -> {
-                    CommandOption anno = p.getAnnotation(CommandOption.class);
-                    OptionData optionData = new OptionData(
-                            anno.type(),
-                            anno.name().toLowerCase(),
-                            anno.description(),
-                            anno.required(),
-                            anno.autoComplete()
-                    );
-                    if (anno.localizedNames() != null && anno.localizedNames().length > 0) optionData.setNameLocalizations(ProcessorUtility.getLocalizedEntries(anno.localizedNames()));
-                    if (anno.localizedDescriptions() != null && anno.localizedDescriptions().length > 0) optionData.setDescriptionLocalizations(ProcessorUtility.getLocalizedEntries(anno.localizedDescriptions()));
-                    if (anno.choices().length > 0) {
-                        optionData.addChoices(parseChoices(anno.choices()));
-                    }
-                    return optionData;
-                })
-                .toArray(OptionData[]::new);
+    @NotNull
+    public List<CommandCategory> getCategories() {
+        return List.copyOf(categories.all());
+    }
+
+    /** @return the slash command dispatcher */
+    @NotNull
+    public SlashCommandHandler getSlashCommandHandler() {
+        return slashCommandHandler;
     }
 
     /**
-     * Parses choice options for command arguments.
+     * Every message-command trigger that was registered.
+     *
+     * @return an unmodifiable map keyed by trigger; empty when message commands are off
+     * @since  0.3.0
      */
-    private Command.Choice[] parseChoices(String[] choiceStrings) {
-        return Arrays.stream(choiceStrings)
-                .map(s -> {
-                    String[] parts = s.split(":");
-                    if (parts.length == 2) {
-                        return new Command.Choice(parts[1], parts[0]);
-                    }else {
-                        return new Command.Choice(parts[0], parts[0]);
-                    }
-                })
-                .toArray(Command.Choice[]::new);
+    @NotNull
+    public Map<String, MessageCommandDefinition> getMessageTriggers() {
+        return triggerIndex.triggers();
+    }
+
+    /**
+     * Builds a {@link CommandProcessor}.
+     *
+     * @since 0.3.0
+     */
+    public static final class Builder {
+
+        private Collection<? extends QCommandBase> commands = List.of();
+        private boolean helpCommand = true;
+        private Collection<CommandCategory> categories = List.of();
+        private MessageCommandConfig messageCommands;
+
+        private Builder() {
+        }
+
+        /**
+         * @param  commands the commands to register; not modified
+         * @return this builder
+         */
+        @NotNull
+        public Builder commands(@NotNull Collection<? extends QCommandBase> commands) {
+            this.commands = Objects.requireNonNull(commands, "commands");
+            return this;
+        }
+
+        /**
+         * @param  helpCommand whether to add the built-in {@code /help}; pass false when you provide
+         *                     your own, since two commands cannot share a name
+         * @return this builder
+         */
+        @NotNull
+        public Builder helpCommand(boolean helpCommand) {
+            this.helpCommand = helpCommand;
+            return this;
+        }
+
+        /**
+         * @param  categories the categories {@code @Category} refers to
+         * @return this builder
+         */
+        @NotNull
+        public Builder categories(@Nullable Collection<CommandCategory> categories) {
+            this.categories = categories == null ? List.of() : categories;
+            return this;
+        }
+
+        /**
+         * Turns message commands on.
+         *
+         * @param  messageCommands how messages are matched; null leaves the feature off
+         * @return this builder
+         */
+        @NotNull
+        public Builder messageCommands(@Nullable MessageCommandConfig messageCommands) {
+            this.messageCommands = messageCommands;
+            return this;
+        }
+
+        /** @return the processor */
+        @NotNull
+        public CommandProcessor build() {
+            return new CommandProcessor(commands, helpCommand, categories, messageCommands);
+        }
     }
 }

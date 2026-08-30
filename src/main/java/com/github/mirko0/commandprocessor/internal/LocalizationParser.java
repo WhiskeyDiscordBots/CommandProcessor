@@ -1,4 +1,4 @@
-package com.github.mirko0.commandprocessor;
+package com.github.mirko0.commandprocessor.internal;
 
 import com.github.mirko0.commandprocessor.annotations.LocalizedEntry;
 import net.dv8tion.jda.api.interactions.DiscordLocale;
@@ -6,7 +6,7 @@ import net.dv8tion.jda.api.interactions.DiscordLocale;
 import java.util.HashMap;
 import java.util.Map;
 
-public class ProcessorUtility {
+public class LocalizationParser {
 
     public static Map<DiscordLocale, String> getLocalizedEntries(LocalizedEntry[] entries) {
         Map<DiscordLocale, String> map = new HashMap<>();

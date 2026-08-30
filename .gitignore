@@ -40,3 +40,9 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+/.idea/
+
+### Gradle ###
+# The cache directory is `.gradle`, with the dot. Never ignore `/gradle/` - that is the wrapper
+# directory, and ignoring it leaves a repository whose `./gradlew` cannot run.
+.gradle/

@@ -5,15 +5,49 @@ plugins {
 }
 
 group = 'com.github.mirko0'
-version = '0.0.2'
+version = '0.3.0'
 description = 'Annotation Command Processor for Discord Java API'
+
+// The language level is part of the API: raising it breaks every consumer on an older JDK.
+// `release` validates against the real Java 17 API rather than just emitting 17 bytecode, so a
+// Java 21 method cannot slip in while building on a Java 21 toolchain.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:all' << '-Xlint:-processing'
+}
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    compileOnly("net.dv8tion:JDA:6.0.0-rc.3")
+    // compileOnly: the consumer brings their own JDA, so the library never drags a second
+    // version into their build. slf4j-api arrives transitively and is the only other thing used.
+    compileOnly 'net.dv8tion:JDA:6.2.0'
+    // Nullability annotations on the public API. CLASS retention, so nothing is needed at runtime
+    // and nothing reaches the consumer's classpath.
+    compileOnly 'org.jetbrains:annotations:24.1.0'
+
+    testImplementation 'net.dv8tion:JDA:6.2.0'
+    testCompileOnly 'org.jetbrains:annotations:24.1.0'
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.13'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
 }
 
 // Configure Javadoc generation
@@ -32,7 +66,7 @@ tasks.register('javadocJar', Jar) {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            from components.java // Publishes the main JAR
+            from components.java // Publishes the main JAR and the sources JAR
             artifact javadocJar // Publishes the Javadoc JAR
             groupId = project.group
             artifactId = 'command-processor'

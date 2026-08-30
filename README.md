@@ -1,72 +1,239 @@
 # Command Processor
 
-## Overview
-Command Processor is a lightweight, annotation-driven Java library designed to streamline the creation and management of Discord slash commands for bots built with JDA (Java Discord API). It provides a clean, modular approach to defining commands, subcommands, and subcommand groups, with support for localized names and descriptions to cater to diverse user bases. The library is flexible, supporting both single JDA instances and sharded bot setups, making it ideal for Discord bot developers seeking a simple yet powerful command framework.
+Annotation-driven slash commands for [JDA](https://github.com/discord-jda/JDA). Define a command as
+a class, annotate it, and the library builds the `CommandData`, registers it, and routes the
+interaction to your method with the options already bound to typed parameters.
 
-## Features
-- **Annotation-Based Command Definition**: Define slash commands, subcommands, and groups using intuitive annotations like `@CommandInfo`, `@SubCommandHandler`, and `@CommandOption`.
-- **Localization Support**: Easily add localized names and descriptions for commands, subcommands, groups, and options using the `@LocalizedEntry` annotation, supporting Discord’s locale system (e.g., English, Spanish, French).
-- **Lightweight**: No external dependencies, minimizing bloat and ensuring compatibility with various project setups.
+No registry list to maintain. No `switch` on command names. No dependencies of its own — JDA is
+`compileOnly`, so you keep control of the version.
 
-## Installation
-Add Command Processor to your project by including it from your local Maven repository after publishing:
+---
 
-**Maven**:
-```xml
-<dependency>
-    <groupId>com.github.mirko0</groupId>
-    <artifactId>quartermaster-commands</artifactId>
-    <version>0.0.2</version>
-</dependency>
-```
-**Gradle**:
-```groovy
-implementation 'com.github.mirko0:quartermaster-commands:0.0.2'
-```
-To publish the library to your local Maven repository, run:
+## Install
+
+Published to your local Maven repository with:
+
 ```bash
 ./gradlew publishToMavenLocal
 ```
 
-## Usage
-Define a command using annotations and register it with CommandProcessor:
-```java
-CommandProcessor processor = new CommandProcessor(jda, commands);
-```
+**Gradle**
 
-```java
-@CommandInfo(name = "ping", description = "Pong!",
-        groups = {
-                @SubCommandGroupInfo(name = "test", description = "Test group")
-        }
-)
-public class PingCommand implements QCommandBase {
+```groovy
+repositories { mavenCentral(); mavenLocal() }
 
-    @Autowired
-    private JDA jda;
-
-    @CommandHandler
-    public void execute(
-            @CommandEvent SlashCommandInteractionEvent event) {
-        event.deferReply(true).queue();
-        event.getHook().editOriginal("Ping: " + event.getJDA().getRestPing().complete() + "ms | Websocket: " + event.getJDA().getGatewayPing() + "ms").queue();
-    }
-
-    @SubCommandHandler(name = "pong", description = "Can you pong?")
-    public void pong(@CommandEvent SlashCommandInteractionEvent event) {
-        event.reply("Pong!").queue();
-    }
-
-    @Group("test")
-    @SubCommandHandler(name = "groupchild", description = "This command is a child of Group \"test\"")
-    public void groupchild(
-            @CommandEvent SlashCommandInteractionEvent event,
-            @CommandOption(type = OptionType.STRING, name = "message", description = "Message to send") String message
-    ) {
-        event.reply("Its fun! + " + message).queue();
-    }
-
+dependencies {
+    implementation 'com.github.mirko0:command-processor:0.3.0'
+    implementation 'net.dv8tion:JDA:6.2.0'   // yours, not the library's
 }
 ```
 
-<img width="267" height="142" alt="image" src="https://github.com/user-attachments/assets/c0d3b210-bd7f-4990-ba08-0d7c2227f26e" />
+**Maven**
+
+```xml
+<dependency>
+    <groupId>com.github.mirko0</groupId>
+    <artifactId>command-processor</artifactId>
+    <version>0.3.0</version>
+</dependency>
+```
+
+---
+
+## A command
+
+```java
+@CommandInfo(name = "ping", description = "Pong!")
+public class PingCommand implements QCommandBase {
+
+    @CommandHandler(defaultResponse = Response.EPHEMERAL)
+    public void execute(@CommandEvent SlashCommandInteractionEvent event) {
+        event.getHook().editOriginal("Gateway: " + event.getJDA().getGatewayPing() + "ms").queue();
+    }
+}
+```
+
+With options, subcommands and a group:
+
+```java
+@CommandInfo(name = "logs", description = "Configure logging.",
+        guildId = "1218884960992235540",
+        groups = {@SubCommandGroupInfo(name = "channel", description = "Where logs go")})
+public class LogsCommand implements QCommandBase {
+
+    @Group("channel")
+    @SubCommandHandler(name = "set", description = "Post logs to a channel.",
+            defaultResponse = Response.EPHEMERAL, order = 1)
+    public void set(@CommandEvent SlashCommandInteractionEvent event,
+                    @CommandOption(type = OptionType.CHANNEL, name = "channel", required = true,
+                            description = "Where to post.")
+                    GuildChannelUnion channel) {
+        ...
+    }
+
+    @Group("channel")
+    @SubCommandHandler(name = "clear", description = "Stop posting logs.", order = 2)
+    public void clear(@CommandEvent SlashCommandInteractionEvent event) { ... }
+}
+```
+
+---
+
+## Wiring
+
+**Sharded** — one call does everything:
+
+```java
+CommandProcessor.builder()
+        .commands(commands)
+        .categories(List.of(
+                CommandCategory.of("music", "Music").withEmoji("🎵").withOrder(1),
+                CommandCategory.of("moderation", "Moderation").withEmoji("🔨").withOrder(2)))
+        .messageCommands(MessageCommandConfig.withPrefix("!"))   // optional
+        .build()
+        .registerAll(shardManager);
+```
+
+The constructors still work for the simple cases; the builder is the way in once categories or
+message commands are involved.
+
+`categories` describes the groups `/help` sorts commands into — see [docs/HELP.md](docs/HELP.md).
+`messageCommands` turns on chat-triggered commands — see
+[docs/MESSAGE-COMMANDS.md](docs/MESSAGE-COMMANDS.md); leave it out and nothing is built or attached.
+
+**Single JDA instance:**
+
+```java
+CommandProcessor processor = new CommandProcessor(commands, false);
+processor.registerGlobalCommands(jda);
+processor.registerGuildCommands(jda);
+processor.registerListener(jda);
+```
+
+Register **after** the shards are ready — a guild whose shard has not connected cannot be resolved,
+and its guild-scoped commands are skipped with a warning.
+
+Do **not** call `registerGlobalCommands` once per shard. Global commands belong to the application,
+not to a shard, so one call registers them everywhere; the `ShardManager` overload picks a shard for
+you.
+
+With Spring, the command list is every bean implementing the marker interface:
+
+```java
+@Autowired private List<QCommandBase> commands;
+```
+
+`helpCommand(false)` — or the second constructor argument — turns off the built-in `/help`. Pass it
+when you provide your own, since two commands cannot share a name.
+
+---
+
+## Option types
+
+Options are bound positionally by `OptionType`. **The parameter must be declared as the type the
+processor passes**, or the reflective call fails at runtime — the command then errors every time the
+option is supplied and works every time it is omitted.
+
+| `OptionType` | Parameter type |
+|---|---|
+| `STRING`, `SUB_COMMAND`, `SUB_COMMAND_GROUP`, `UNKNOWN` | `String` |
+| `INTEGER` | `Long` |
+| `NUMBER` | `Double` |
+| `BOOLEAN` | `Boolean` |
+| `USER` | `User` |
+| `CHANNEL` | `GuildChannelUnion` |
+| `ROLE` | `Role` |
+| `MENTIONABLE` | `IMentionable` |
+| `ATTACHMENT` | `Message.Attachment` |
+
+**An option the user did not supply arrives as `null`**, so every option parameter must be a
+reference type — a primitive throws on unboxing — and every optional one must be null-checked.
+
+Choices are `"<value>:<label>"` and must contain exactly one colon; with more, the whole string
+becomes both value and label and the library warns.
+
+---
+
+## Behaviour worth knowing
+
+- **`defaultResponse`** decides whether the library acknowledges the interaction before your handler
+  runs. `DEFER` and `EPHEMERAL` defer, so the handler must use `event.getHook()`. `NONE` — the
+  default — means the handler acknowledges.
+- **Subcommands are ordered** by `@SubCommandHandler(order = ...)` then by name, so the listing is
+  stable across builds. Reflection gives no inherent order.
+- **Handlers may be inherited.** Discovery walks the class hierarchy; an override replaces the method
+  it overrides.
+- **A command with subcommands has no base handler.** Discord never delivers a bare invocation, so
+  `@CommandHandler` and its options are ignored — the library warns if both are present.
+- **Guild registration replaces every command in that guild.** `updateCommands()` is a full `PUT`.
+- **Over-long names and descriptions are trimmed with a warning**; a blank description is replaced
+  with a placeholder and logged as an error, so one bad command does not stop the rest from
+  registering. A command that fails to parse entirely is skipped, not fatal. The same applies to an
+  option with no name, more than 25 choices, choices on a type that cannot have them, and a required
+  option declared after an optional one.
+- **`@Category` groups commands for `/help`**, and `permissions` decides who is shown a command.
+  See [docs/HELP.md](docs/HELP.md).
+- **Aliases are not registered with Discord** — a slash command has one name. They are used by
+  `/help` lookup and display.
+- **`autoComplete = true` needs an `@AutoCompleteHandler`** on the same class to answer it. Discord
+  allows three seconds and no deferral. See [docs/AUTOCOMPLETE.md](docs/AUTOCOMPLETE.md).
+- **Message commands are off** unless a `MessageCommandConfig` is supplied. Reading message content
+  needs the privileged `MESSAGE_CONTENT` intent unless every trigger is mention-prefixed. See
+  [docs/MESSAGE-COMMANDS.md](docs/MESSAGE-COMMANDS.md).
+
+---
+
+## Localization
+
+```java
+@CommandInfo(name = "ping", description = "Pong!",
+        localizedNames = @LocalizedEntry(locale = DiscordLocale.GERMAN, value = "klingeln"),
+        localizedDescriptions = @LocalizedEntry(locale = DiscordLocale.GERMAN, value = "Pong!"))
+```
+
+Available on commands, subcommands, groups and options.
+
+---
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/HELP.md](docs/HELP.md) | Categories, the built-in help command, permission filtering, aliases |
+| [docs/AUTOCOMPLETE.md](docs/AUTOCOMPLETE.md) | Supplying suggestions for an option as the user types |
+| [docs/MESSAGE-COMMANDS.md](docs/MESSAGE-COMMANDS.md) | The optional prefix / prefixless message-command feature |
+| [docs/CODE-STYLE.md](docs/CODE-STYLE.md) | Conventions for this repository: API surface, no Lombok, deprecation policy, javadoc, size budgets |
+| [docs/AUDIT.md](docs/AUDIT.md) | Known defects and structural observations, with severity and reproduction |
+
+---
+
+## Requirements
+
+Java 17+, JDA 6.x. slf4j-api arrives through JDA and is the only thing used beyond the JDK.
+
+---
+
+## Upgrading
+
+**0.3.0** adds message commands and `CommandProcessor.builder()`. No breaking changes; the feature
+is inert unless a `MessageCommandConfig` is passed.
+
+**0.2.0** adds autocomplete dispatch — see [docs/AUTOCOMPLETE.md](docs/AUTOCOMPLETE.md). No breaking
+changes; an option already declaring `autoComplete = true` now warns at registration if nothing
+answers it, where before it silently showed an empty list.
+
+### To 0.1.0
+
+Breaking, all mechanical:
+
+- `…commandprocessor.utils` is now `…commandprocessor.internal` and is **not** public API.
+- `…commandprocessor.integrated.HelpCommand` is now `…commandprocessor.help.HelpCommand`.
+- `CommandProcessor` is `final`; its constructors take `Collection<? extends QCommandBase>`.
+- `CommandDefinition.getSubcommands()` and `getGroups()` return unmodifiable collections.
+
+Deprecated but still working, removal planned for 1.0.0: `CommandInfo.contextType` (use
+`contexts`), `CommandInfo.integrationType` (use `integrationTypes`), `CommandInfo.moduleId` (use
+`@Category`), `CommandDefinition.setNSFW` (use `setNsfw`), `CommandDefinition.getModuleId` /
+`setModuleId` (use `getCategoryId` / `setCategoryId`).
+
+[docs/AUDIT.md](docs/AUDIT.md) lists everything that changed and why.
