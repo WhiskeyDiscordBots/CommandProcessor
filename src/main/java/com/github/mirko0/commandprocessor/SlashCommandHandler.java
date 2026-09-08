@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -73,7 +74,7 @@ public class SlashCommandHandler extends ListenerAdapter {
      */
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
-        String cmdName = event.getName().toLowerCase();
+        String cmdName = event.getName().toLowerCase(Locale.ROOT);
         CommandDefinition cmdDef = commandMap.get(cmdName);
         if (cmdDef == null) return;
 
@@ -94,7 +95,7 @@ public class SlashCommandHandler extends ListenerAdapter {
      */
     private void handleGroupSubcommand(SlashCommandInteractionEvent event, CommandDefinition cmdDef,
                                        String groupName, String subName) {
-        SubcommandGroupDefinition groupDef = cmdDef.getGroups().get(groupName.toLowerCase());
+        SubcommandGroupDefinition groupDef = cmdDef.getGroups().get(groupName.toLowerCase(Locale.ROOT));
         SubcommandDefinition subDef = groupDef == null ? null : groupDef.getSubcommands().stream()
                 .filter(s -> s.getName().equalsIgnoreCase(subName))
                 .findFirst()
@@ -224,7 +225,7 @@ public class SlashCommandHandler extends ListenerAdapter {
      */
     @Override
     public void onCommandAutoCompleteInteraction(CommandAutoCompleteInteractionEvent event) {
-        CommandDefinition cmdDef = commandMap.get(event.getName().toLowerCase());
+        CommandDefinition cmdDef = commandMap.get(event.getName().toLowerCase(Locale.ROOT));
         if (cmdDef == null) return;
 
         AutoCompleteQuery focused = event.getFocusedOption();

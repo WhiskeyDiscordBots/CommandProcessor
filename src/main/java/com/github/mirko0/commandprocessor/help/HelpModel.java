@@ -16,6 +16,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -158,7 +159,7 @@ public final class HelpModel {
         @Nullable
         public CommandDefinition find(@Nullable String query) {
             if (query == null) return null;
-            String needle = query.trim().toLowerCase();
+            String needle = query.trim().toLowerCase(Locale.ROOT);
             if (needle.startsWith("/")) needle = needle.substring(1);
             if (needle.isEmpty()) return null;
 

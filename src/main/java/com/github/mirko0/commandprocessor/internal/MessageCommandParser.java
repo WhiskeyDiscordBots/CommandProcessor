@@ -11,6 +11,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -70,7 +71,7 @@ public final class MessageCommandParser {
         for (String raw : info.names()) {
             if (raw == null || raw.isBlank()) continue;
 
-            String trigger = raw.trim().toLowerCase();
+            String trigger = raw.trim().toLowerCase(Locale.ROOT);
             if (trigger.chars().anyMatch(Character::isWhitespace)) {
                 // Matching is on the first token, so a trigger with a space could never equal one.
                 log.error("Trigger \"{}\" on {} contains whitespace. A trigger is matched against the "
@@ -90,7 +91,7 @@ public final class MessageCommandParser {
             if (anno == null) continue;
 
             Annotations.makeAccessible(method, origin);
-            String name = anno.name() == null ? "" : anno.name().trim().toLowerCase();
+            String name = anno.name() == null ? "" : anno.name().trim().toLowerCase(Locale.ROOT);
 
             if (name.isEmpty()) {
                 if (definition.getBaseHandler() != null) {

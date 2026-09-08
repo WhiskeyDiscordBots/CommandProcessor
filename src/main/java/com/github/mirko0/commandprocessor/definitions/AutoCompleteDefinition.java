@@ -4,6 +4,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.Method;
+import java.util.Locale;
 
 /**
  * A parsed {@link com.github.mirko0.commandprocessor.annotations.AutoCompleteHandler}: which option
@@ -85,7 +86,7 @@ public class AutoCompleteDefinition {
     }
 
     private static String normalise(String value) {
-        return value == null ? "" : value.trim().toLowerCase();
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
     }
 
     private static String blankToNull(String value) {

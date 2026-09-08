@@ -56,7 +56,7 @@ public final class TriggerIndex {
 
             definitions.add(definition);
             for (String trigger : definition.getTriggers()) {
-                String key = config.caseSensitive() ? trigger : trigger.toLowerCase();
+                String key = MessageParsing.key(trigger, config.caseSensitive());
 
                 MessageCommandDefinition previous = byTrigger.putIfAbsent(key, definition);
                 if (previous != null) {
@@ -79,11 +79,6 @@ public final class TriggerIndex {
 
     public boolean isEmpty() {
         return byTrigger.isEmpty();
-    }
-
-    /** True when at least one trigger can fire without the bot being mentioned. */
-    public boolean needsMessageContent() {
-        return !byTrigger.isEmpty();
     }
 
     private static void validate(Map<String, MessageCommandDefinition> byTrigger,

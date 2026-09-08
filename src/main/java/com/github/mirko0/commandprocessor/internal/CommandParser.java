@@ -36,6 +36,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -82,7 +83,7 @@ public final class CommandParser {
         if (info == null) return null;
 
         String origin = clazz.getSimpleName();
-        String cmdName = trim(info.name().toLowerCase(), MAX_NAME, "Command name", origin);
+        String cmdName = trim(info.name().toLowerCase(Locale.ROOT), MAX_NAME, "Command name", origin);
         String cmdDescription = description(info.description(), "Command '" + cmdName + "'", origin);
 
         CommandDefinition cmdDef = new CommandDefinition();
@@ -250,7 +251,7 @@ public final class CommandParser {
         List<String> aliases = new ArrayList<>();
         for (String raw : info.aliases()) {
             if (raw == null || raw.isBlank()) continue;
-            String alias = trim(raw.trim().toLowerCase(), MAX_NAME, "Alias", origin);
+            String alias = trim(raw.trim().toLowerCase(Locale.ROOT), MAX_NAME, "Alias", origin);
             if (alias.equals(cmdName) || aliases.contains(alias)) continue;
             aliases.add(alias);
         }
@@ -310,7 +311,7 @@ public final class CommandParser {
             SubCommandHandler subAnno = method.getAnnotation(SubCommandHandler.class);
             hadSubCommands = true;
 
-            String subName = trim(subAnno.name().toLowerCase(), MAX_NAME, "Subcommand name", origin);
+            String subName = trim(subAnno.name().toLowerCase(Locale.ROOT), MAX_NAME, "Subcommand name", origin);
             String owner = cmdDef.getName() + " " + subName;
             String subDescription = description(subAnno.description(), "Subcommand '" + owner + "'", origin);
 
@@ -340,7 +341,7 @@ public final class CommandParser {
                 continue;
             }
 
-            String groupName = groupAnno.value().trim().toLowerCase();
+            String groupName = groupAnno.value().trim().toLowerCase(Locale.ROOT);
             SubcommandGroupDefinition groupDef = groupDefMap.get(groupName);
             if (groupDef == null) {
                 log.warn("Command '{}' ({}) subcommand '{}' is in group '{}', which is not declared in "
@@ -373,7 +374,7 @@ public final class CommandParser {
                 .filter(method -> method.isAnnotationPresent(SubCommandHandler.class))
                 .sorted(Comparator
                         .comparingInt((Method method) -> method.getAnnotation(SubCommandHandler.class).order())
-                        .thenComparing(method -> method.getAnnotation(SubCommandHandler.class).name().toLowerCase()))
+                        .thenComparing(method -> method.getAnnotation(SubCommandHandler.class).name().toLowerCase(Locale.ROOT)))
                 .toList();
     }
 
@@ -393,7 +394,7 @@ public final class CommandParser {
     private static Map<String, SubcommandGroupDefinition> parseSubcommandGroups(CommandInfo info, String origin) {
         Map<String, SubcommandGroupDefinition> groupDefMap = new LinkedHashMap<>();
         for (SubCommandGroupInfo groupInfo : info.groups()) {
-            String groupName = trim(groupInfo.name().trim().toLowerCase(), MAX_NAME,
+            String groupName = trim(groupInfo.name().trim().toLowerCase(Locale.ROOT), MAX_NAME,
                     "Subcommand group name", origin);
 
             SubcommandGroupDefinition groupDef = new SubcommandGroupDefinition();
@@ -426,7 +427,7 @@ public final class CommandParser {
 
     /** @return the option, or null when it is unusable and has been skipped */
     private static OptionData buildOption(CommandOption anno, String owner, String origin) {
-        String optionName = anno.name() == null ? "" : anno.name().trim().toLowerCase();
+        String optionName = anno.name() == null ? "" : anno.name().trim().toLowerCase(Locale.ROOT);
         if (optionName.isEmpty()) {
             // JDA throws "Name may not be empty" from inside the OptionData constructor, which used
             // to abort the whole registration for one unfinished parameter.

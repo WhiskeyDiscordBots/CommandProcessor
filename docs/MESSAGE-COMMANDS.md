@@ -4,8 +4,8 @@ An optional second dispatch path: the same command classes, triggered by a chat 
 slash command. Off unless configured. Prefix configurable and required by default, with a per-command
 opt-out so a bare `uno` works.
 
-**Shipped in 0.3.0.** This document is both the design and the reference; §10 records where it
-differs from the original plan.
+**Shipped in 0.3.0**, revised in **0.4.0**. This document is both the design and the reference;
+§10 records where it differs from the original plan and §11 what 0.4.0 changed.
 
 ---
 
@@ -20,6 +20,10 @@ There is one exception worth designing around: **Discord sends full content with
 the message mentions the app, or is a DM to it.** So `@Bot uno` works on a bot with no privileged
 intents at all. The config below supports mention-prefix as a first-class trigger for exactly that
 reason — it is the only form of this feature that is free.
+
+Since 0.4.0 **a mention satisfies every `PrefixMode`**, `NONE` included. The mode is about the
+configured prefix, and a mention is not that prefix; a `NONE` command that refused `@Bot uno` would
+have made the free path unreachable for exactly the commands most likely to want it.
 
 **A prefixless trigger fires on every message in every channel of every guild.** `uno` is a common
 English word. Section 5 is about containing that, and it is not optional.
@@ -79,6 +83,9 @@ public enum PrefixMode {
 }
 ```
 
+`accepts(prefixed, mentioned)` is the live form; `accepts(prefixed)` is deprecated since 0.4.0
+because it cannot tell a configured prefix from a mention.
+
 ### `@MessageCommandInfo`
 
 | Member | Default | Meaning |
@@ -105,12 +112,30 @@ If no named handler matches, the unnamed one runs with the arguments untouched. 
 unnamed one either, nothing happens and nothing is logged: the user typed something the command does
 not do, which is not an error worth shouting about.
 
+### `MessageInvocation`
+
+*Since 0.4.0.* **How** the command was typed, as opposed to what it was given.
+
+```java
+public record MessageInvocation(String trigger, String rest, boolean prefixed, boolean mentioned) {
+    public boolean bare();      // neither a prefix nor a mention
+}
+```
+
+A command that means two things needs this, and a game bot's usually does. `uno` typed bare in a
+channel with a game running is *"I have one card left"*; `!uno` typed where there is no game is
+*"start one"*. Both reach the same command, and only the invocation form separates them — the
+`PrefixMode` cannot, because `OPTIONAL` is precisely one command that arrives both ways.
+
+Reachable from the filter (below) and from a handler parameter.
+
 ### Parameter annotations
 
 | Annotation | Injected |
 |---|---|
 | `@MessageEvent` | The `MessageReceivedEvent` |
 | `@MessageArgs` | `Arguments` — everything after the trigger (and after the subcommand name, if one matched) |
+| `@MessageArgs` on a `MessageInvocation` parameter | The invocation, since 0.4.0. The annotation means "the parsed invocation"; the parameter's **type** picks the view |
 | `@MessageArg(0)` | One positional argument, converted to the parameter's type |
 
 `@CommandOption` is **not** reused. It carries an `OptionType`, `required`, `autoComplete` and
@@ -212,27 +237,37 @@ fires on `unofficial results are in`.
 ```java
 @FunctionalInterface
 public interface MessageCommandFilter {
-    /**
-     * @return true if this invocation should proceed. Called after the trigger matched and before
-     *         the handler runs; must not block.
-     */
+
     boolean allows(MessageReceivedEvent event, MessageCommandDefinition definition);
+
+    /** Since 0.4.0, and what the dispatcher actually calls. */
+    default boolean allows(MessageReceivedEvent event, MessageCommandDefinition definition,
+                           MessageInvocation invocation) {
+        return allows(event, definition);
+    }
 }
 ```
 
-For UNO this is the whole answer:
+For UNO this is most of the answer:
 
 ```java
-boolean allows(MessageReceivedEvent event, MessageCommandDefinition definition) {
+boolean allows(MessageReceivedEvent event, MessageCommandDefinition definition,
+               MessageInvocation invocation) {
     // A bare "uno" only means anything in a channel that has a running game.
-    return definition.prefixMode() == PrefixMode.REQUIRED
-            || gameManager.findByChannel(event.getChannel()) != null;
+    return invocation.prefixed()
+            || gameManager.findByChannel(event.getChannel().getIdLong()) != null;
 }
 ```
 
 `!uno` still starts a game anywhere; bare `uno` only does something where a game is already running.
 That is both the correct product behaviour and the thing that stops the bot reacting to ordinary
 conversation.
+
+**Ask the invocation, not the definition.** The obvious version of this test is
+`definition.getPrefixMode() == PrefixMode.REQUIRED`, and it is wrong for the case that matters: a
+`PrefixMode.OPTIONAL` command is *one* command that can arrive prefixed or bare, so its mode is the
+same either way and tells you nothing about the message in front of you. That is what the
+three-argument overload is for.
 
 The filter is per-processor, runs after trigger matching, and returning `false` is silent — no reply,
 no log above `debug`. A filter that rejects most traffic is the normal case, not an error.
@@ -368,3 +403,44 @@ missing permission logs and skips rather than reporting a failure for something 
 
 Everything else is as designed, including the deliberate omissions in §7 — no quoting, no per-guild
 prefixes, no message-command groups.
+
+---
+
+## 11. What 0.4.0 changed
+
+Four fixes and one addition, all found while wiring UNO's `uno` trigger up to this.
+
+**Triggers are folded with `Locale.ROOT`.** `TriggerIndex` and the dispatcher both called bare
+`toLowerCase()`, which uses `Locale.getDefault()`. On a JVM running with a Turkish or Azeri locale
+`"I"` lowercases to `"ı"` — dotless — so a user typing `IHAVEUNO` matched nothing. It looked
+symmetric and was not: the trigger side is already lowercase in the annotation, so only the *user's*
+typing was transformed. Both sides now go through one `MessageParsing.key(trigger, caseSensitive)`
+so they cannot drift again, and the same fix was applied to the other bare `toLowerCase()` calls in
+the slash path — 17 sites in total. Covered by `TriggerNormalisationTest`, which sets a Turkish
+default locale and restores it afterwards.
+
+**A mention satisfies every `PrefixMode`.** `stripMention` set `prefixed = true`, and
+`NONE.accepts(true)` was false — so `@Bot uno` could not reach a bare-only command, which is the one
+form that needs no privileged intent. `MessageInvocation` now records `mentioned` separately and
+`PrefixMode.accepts(prefixed, mentioned)` treats a mention as always acceptable. `accepts(boolean)`
+is deprecated, not removed.
+
+**`deleteTrigger` moved out of the `try`.** A deletion that failed was caught by the handler's
+`catch`, logged as "command failed", and answered with *"Something went wrong running that."* — for
+a command that had already run correctly.
+
+**`TriggerIndex.needsMessageContent()` removed.** Dead, and its javadoc claimed something it did not
+do (*"at least one trigger can fire without the bot being mentioned"*; it returned *"the index is
+not empty"*). Internal class, so removing it breaks nothing.
+
+**`MessageInvocation` added**, plus the filter's three-argument overload and `@MessageArgs` binding
+by parameter type. A command that means different things prefixed and bare could not previously tell
+which had happened — see §3 and §5.
+
+The `isBot` check is **not** a change: `MessageCommandHandler` has ignored bots, webhooks and its own
+messages since 0.3.0, gated on `MessageCommandConfig.ignoreBots()`, default true. The predecessor
+bot's listener checks none of the three.
+
+Nothing here breaks a consumer that does not touch `internal/`. The removed and re-shaped types —
+`MessageParsing.Invocation`, `TriggerIndex.needsMessageContent()`, `ParameterBinder.Context` — are
+all in that package.

@@ -5,6 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -35,7 +36,7 @@ public final class CommandCategory {
     /** Sorts by {@link #order()}, then by display name, so a listing is always stable. */
     public static final Comparator<CommandCategory> BY_ORDER =
             Comparator.comparingInt(CommandCategory::order)
-                    .thenComparing(category -> category.displayName().toLowerCase());
+                    .thenComparing(category -> category.displayName().toLowerCase(Locale.ROOT));
 
     private final String id;
     private final String displayName;
@@ -79,7 +80,7 @@ public final class CommandCategory {
      */
     @NotNull
     public static String normaliseId(@Nullable String id) {
-        return id == null ? "" : id.trim().toLowerCase();
+        return id == null ? "" : id.trim().toLowerCase(Locale.ROOT);
     }
 
     /**

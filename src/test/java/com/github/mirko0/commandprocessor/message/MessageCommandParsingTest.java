@@ -149,7 +149,13 @@ class MessageCommandParsingTest {
         assertEquals(Uno.class, processor.getMessageTriggers().get("uno").getInstance().getClass());
     }
 
+    /**
+     * The deprecated single-argument overload, kept covered because it is still on the API and a
+     * consumer written against 0.3.0 still calls it. The mention-aware form is in
+     * {@code InvocationFormTest}.
+     */
     @Test
+    @SuppressWarnings("deprecation")
     void prefixMode_decidesWhichFormsAreAccepted() {
         assertAll(
                 () -> assertTrue(PrefixMode.REQUIRED.accepts(true)),

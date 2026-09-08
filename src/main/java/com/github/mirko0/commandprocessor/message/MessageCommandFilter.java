@@ -14,12 +14,14 @@ import org.jetbrains.annotations.NotNull;
  * <p>For a game bot the filter is usually the whole answer:
  *
  * <pre>{@code
- * (event, definition) -> definition.getPrefixMode() == PrefixMode.REQUIRED
- *         || games.findByChannel(event.getChannel()) != null;
+ * (event, definition, invocation) -> invocation.prefixed()
+ *         || games.findByChannel(event.getChannel().getIdLong()) != null;
  * }</pre>
  *
  * <p>{@code !uno} still works anywhere; bare {@code uno} only does something in a channel that has a
- * game running.
+ * game running. Note that this asks the <em>invocation</em> whether a prefix was typed rather than
+ * asking the definition for its {@link PrefixMode} — a {@code PrefixMode.OPTIONAL} command is one
+ * command that can arrive both ways, and the mode alone cannot tell you which happened.
  *
  * <p>Called after the trigger matched and before the handler runs. Returning false is silent — no
  * reply, nothing above debug in the log — because rejecting most traffic is the normal case, not an
@@ -42,4 +44,23 @@ public interface MessageCommandFilter {
      * @return true to run the handler
      */
     boolean allows(@NotNull MessageReceivedEvent event, @NotNull MessageCommandDefinition definition);
+
+    /**
+     * The same decision, with how the command was typed.
+     *
+     * <p>This is the overload the dispatcher calls. It delegates to the two-argument form by
+     * default, so an existing lambda keeps working; override it when prefixed and bare invocations
+     * of the same command should be treated differently, which for a bare trigger is usually.
+     *
+     * @param  event      the message that matched
+     * @param  definition the command it matched
+     * @param  invocation how it was typed
+     * @return true to run the handler
+     * @since 0.4.0
+     */
+    default boolean allows(@NotNull MessageReceivedEvent event,
+                           @NotNull MessageCommandDefinition definition,
+                           @NotNull MessageInvocation invocation) {
+        return allows(event, definition);
+    }
 }

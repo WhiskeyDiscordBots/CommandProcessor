@@ -8,6 +8,7 @@ import com.github.mirko0.commandprocessor.annotations.MessageArg;
 import com.github.mirko0.commandprocessor.annotations.MessageArgs;
 import com.github.mirko0.commandprocessor.annotations.MessageEvent;
 import com.github.mirko0.commandprocessor.message.Arguments;
+import com.github.mirko0.commandprocessor.message.MessageInvocation;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.interactions.commands.CommandInteractionPayload;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
@@ -16,6 +17,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.util.Locale;
 
 /**
  * Builds the argument array for a handler method from an interaction.
@@ -43,18 +45,19 @@ public final class ParameterBinder {
      * @param payload      the same event as an option carrier, or null for a message command
      * @param focusedValue what the user has typed into the focused option, or null outside autocomplete
      * @param arguments    the message command's arguments, or null outside a message command
+     * @param invocation   how the message command was typed, or null outside a message command
      */
     public record Context(Object event, CommandInteractionPayload payload, String focusedValue,
-                          Arguments arguments) {
+                          Arguments arguments, MessageInvocation invocation) {
 
         /** A slash-command or autocomplete invocation. */
         public static Context ofInteraction(Object event, CommandInteractionPayload payload, String focusedValue) {
-            return new Context(event, payload, focusedValue, null);
+            return new Context(event, payload, focusedValue, null, null);
         }
 
         /** A message-command invocation, which carries arguments instead of resolved options. */
-        public static Context ofMessage(Object event, Arguments arguments) {
-            return new Context(event, null, null, arguments);
+        public static Context ofMessage(Object event, Arguments arguments, MessageInvocation invocation) {
+            return new Context(event, null, null, arguments, invocation);
         }
     }
 
@@ -80,6 +83,10 @@ public final class ParameterBinder {
             return eventFor(parameter, context, method);
         }
         if (parameter.isAnnotationPresent(MessageArgs.class)) {
+            // The parameter's type picks the view: what was typed after the trigger, or how the
+            // trigger itself was typed. A command that behaves differently prefixed and bare needs
+            // the second, and a bare trigger on a common word usually does.
+            if (parameter.getType() == MessageInvocation.class) return context.invocation();
             return context.arguments() == null ? Arguments.empty() : context.arguments();
         }
         if (parameter.isAnnotationPresent(MessageArg.class)) {
@@ -151,7 +158,7 @@ public final class ParameterBinder {
      * <p>An option the user did not supply is null, so a parameter must never be a primitive.
      */
     private static Object optionFor(CommandOption option, Context context) {
-        OptionMapping mapping = context.payload().getOption(option.name().trim().toLowerCase());
+        OptionMapping mapping = context.payload().getOption(option.name().trim().toLowerCase(Locale.ROOT));
         if (mapping == null) return null;
 
         return switch (option.type()) {

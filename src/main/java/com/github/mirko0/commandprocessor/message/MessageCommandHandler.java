@@ -65,23 +65,23 @@ public final class MessageCommandHandler extends ListenerAdapter {
         String content = event.getMessage().getContentRaw().trim();
         if (content.isEmpty()) return;
 
-        MessageParsing.Invocation invocation = MessageParsing.parse(content, config.prefix(),
+        MessageInvocation invocation = MessageParsing.parse(content, config.prefix(),
                 config.allowMentionPrefix(), event.getJDA().getSelfUser().getId());
         if (invocation == null) return;
 
         MessageCommandDefinition definition = triggers.get(key(invocation.trigger()));
         if (definition == null) return;
-        if (!definition.getPrefixMode().accepts(invocation.prefixed())) return;
+        if (!definition.getPrefixMode().accepts(invocation.prefixed(), invocation.mentioned())) return;
         if (definition.isGuildOnly() && !event.isFromGuild()) return;
 
-        if (!config.filter().allows(event, definition)) return;
+        if (!config.filter().allows(event, definition, invocation)) return;
         if (!hasPermission(event, definition)) return;
 
-        run(event, definition, Arguments.of(invocation.rest(), event.getMessage()));
+        run(event, definition, invocation, Arguments.of(invocation.rest(), event.getMessage()));
     }
 
     private String key(String trigger) {
-        return config.caseSensitive() ? trigger : trigger.toLowerCase();
+        return MessageParsing.key(trigger, config.caseSensitive());
     }
 
     // -------------------------------------------------------------- execution
@@ -116,7 +116,8 @@ public final class MessageCommandHandler extends ListenerAdapter {
         return text.toString();
     }
 
-    private void run(MessageReceivedEvent event, MessageCommandDefinition definition, Arguments arguments) {
+    private void run(MessageReceivedEvent event, MessageCommandDefinition definition,
+                     MessageInvocation invocation, Arguments arguments) {
         Method handler = definition.getBaseHandler();
         Arguments forHandler = arguments;
 
@@ -136,9 +137,8 @@ public final class MessageCommandHandler extends ListenerAdapter {
         }
 
         try {
-            handler.invoke(definition.getInstance(),
-                    ParameterBinder.bind(handler, ParameterBinder.Context.ofMessage(event, forHandler)));
-            deleteTrigger(event, definition);
+            handler.invoke(definition.getInstance(), ParameterBinder.bind(handler,
+                    ParameterBinder.Context.ofMessage(event, forHandler, invocation)));
         } catch (Exception failure) {
             Throwable cause = failure instanceof InvocationTargetException wrapped && wrapped.getCause() != null
                     ? wrapped.getCause()
@@ -150,7 +150,13 @@ public final class MessageCommandHandler extends ListenerAdapter {
             if (config.replyOnError()) {
                 event.getMessage().reply("Something went wrong running that.").queue(null, IGNORE_GONE);
             }
+            return;
         }
+
+        // Outside the try on purpose: the command has already run successfully by this point, and a
+        // failure to tidy up after it is not a failure of the command. Reporting one as the other
+        // told the user their command had not worked when it had.
+        deleteTrigger(event, definition);
     }
 
     /**

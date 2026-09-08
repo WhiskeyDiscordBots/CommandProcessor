@@ -1,7 +1,10 @@
 package com.github.mirko0.commandprocessor.internal;
 
+import com.github.mirko0.commandprocessor.message.MessageInvocation;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.Locale;
 
 /**
  * Splits a raw message into a trigger and the rest.
@@ -9,7 +12,8 @@ import org.jetbrains.annotations.Nullable;
  * <p>Pure: no JDA types, so the matching rules — which are the part that must not regress — can be
  * tested directly rather than through a mocked event.
  *
- * <p><strong>Internal.</strong> Not part of the public API and may change in any release.
+ * <p><strong>Internal.</strong> Not part of the public API and may change in any release. The value
+ * it returns, {@link MessageInvocation}, is public.
  *
  * @since 0.3.0
  */
@@ -19,13 +23,21 @@ public final class MessageParsing {
     }
 
     /**
-     * What a message resolved to, before any command was looked up.
+     * The lookup key for a trigger, used to build the index and to look a typed word up in it.
      *
-     * @param trigger  the first word, after any prefix
-     * @param rest     everything after the trigger, trimmed
-     * @param prefixed whether the message carried the prefix or a mention of the bot
+     * <p>Both sides go through here so they cannot drift, and it is
+     * {@link Locale#ROOT} rather than the default locale. On a JVM running with a Turkish
+     * or Azeri locale {@code "I"} lowercases to {@code "ı"} — dotless — so a player typing
+     * {@code IHAVEUNO} would match nothing, while the index, built from an annotation value that is
+     * already lowercase, was unaffected. Silent, host-dependent, and invisible in a bug report.
+     *
+     * @param  trigger       a trigger, or the first word of a message
+     * @param  caseSensitive whether the configuration distinguishes case
+     * @return the key to store or look up under
      */
-    public record Invocation(@NotNull String trigger, @NotNull String rest, boolean prefixed) {
+    @NotNull
+    public static String key(@NotNull String trigger, boolean caseSensitive) {
+        return caseSensitive ? trigger : trigger.toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -36,19 +48,21 @@ public final class MessageParsing {
      * @return the split, or null when the message cannot be a command at all
      */
     @Nullable
-    public static Invocation parse(@Nullable String content, @NotNull String prefix,
-                                   boolean allowMention, @Nullable String selfId) {
+    public static MessageInvocation parse(@Nullable String content, @NotNull String prefix,
+                                          boolean allowMention, @Nullable String selfId) {
         if (content == null) return null;
 
         String body = content.trim();
         if (body.isEmpty()) return null;
 
         boolean prefixed = false;
+        boolean mentioned = false;
 
         String withoutMention = allowMention ? stripMention(body, selfId) : null;
         if (withoutMention != null) {
             body = withoutMention;
             prefixed = true;
+            mentioned = true;
         } else if (!prefix.isEmpty() && body.startsWith(prefix)) {
             body = body.substring(prefix.length()).trim();
             prefixed = true;
@@ -59,8 +73,9 @@ public final class MessageParsing {
         // used startsWith("uno"), which fires on "unofficial results are in".
         int space = indexOfWhitespace(body);
         return space < 0
-                ? new Invocation(body, "", prefixed)
-                : new Invocation(body.substring(0, space), body.substring(space + 1).trim(), prefixed);
+                ? new MessageInvocation(body, "", prefixed, mentioned)
+                : new MessageInvocation(body.substring(0, space), body.substring(space + 1).trim(),
+                        prefixed, mentioned);
     }
 
     /**

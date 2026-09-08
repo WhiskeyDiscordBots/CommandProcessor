@@ -1,5 +1,6 @@
 package com.github.mirko0.commandprocessor.internal;
 
+import com.github.mirko0.commandprocessor.message.MessageInvocation;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -17,13 +18,13 @@ class MessageParsingTest {
 
     private static final String SELF = "1234567890";
 
-    private static MessageParsing.Invocation parse(String content) {
+    private static MessageInvocation parse(String content) {
         return MessageParsing.parse(content, "!", true, SELF);
     }
 
     @Test
     void parse_prefixedCommand_splitsTriggerAndRest() {
-        MessageParsing.Invocation invocation = parse("!uno start now");
+        MessageInvocation invocation = parse("!uno start now");
         assertAll(
                 () -> assertEquals("uno", invocation.trigger()),
                 () -> assertEquals("start now", invocation.rest()),
@@ -32,7 +33,7 @@ class MessageParsingTest {
 
     @Test
     void parse_bareWord_isNotMarkedPrefixed() {
-        MessageParsing.Invocation invocation = parse("uno");
+        MessageInvocation invocation = parse("uno");
         assertAll(
                 () -> assertEquals("uno", invocation.trigger()),
                 () -> assertEquals("", invocation.rest()),
@@ -50,7 +51,7 @@ class MessageParsingTest {
 
     @Test
     void parse_extraWhitespace_isIgnored() {
-        MessageParsing.Invocation invocation = parse("   !uno    start   now   ");
+        MessageInvocation invocation = parse("   !uno    start   now   ");
         assertAll(
                 () -> assertEquals("uno", invocation.trigger()),
                 () -> assertEquals("start   now", invocation.rest()));
@@ -71,7 +72,7 @@ class MessageParsingTest {
 
         @Test
         void parse_leadingMentionOfTheBot_countsAsPrefixed() {
-            MessageParsing.Invocation invocation = parse("<@" + SELF + "> uno start");
+            MessageInvocation invocation = parse("<@" + SELF + "> uno start");
             assertAll(
                     () -> assertEquals("uno", invocation.trigger()),
                     () -> assertEquals("start", invocation.rest()),
@@ -86,7 +87,7 @@ class MessageParsingTest {
 
         @Test
         void parse_mentionOfSomeoneElse_isNotAPrefix() {
-            MessageParsing.Invocation invocation = parse("<@999> uno");
+            MessageInvocation invocation = parse("<@999> uno");
             assertAll(
                     () -> assertEquals("<@999>", invocation.trigger()),
                     () -> assertFalse(invocation.prefixed()));
@@ -99,7 +100,7 @@ class MessageParsingTest {
 
         @Test
         void parse_mentionDisabled_isTreatedAsOrdinaryText() {
-            MessageParsing.Invocation invocation =
+            MessageInvocation invocation =
                     MessageParsing.parse("<@" + SELF + "> uno", "!", false, SELF);
             assertFalse(invocation.prefixed());
         }
@@ -111,7 +112,7 @@ class MessageParsingTest {
 
         @Test
         void parse_multiCharacterPrefix_isStripped() {
-            MessageParsing.Invocation invocation = MessageParsing.parse(">>uno go", ">>", false, SELF);
+            MessageInvocation invocation = MessageParsing.parse(">>uno go", ">>", false, SELF);
             assertAll(
                     () -> assertEquals("uno", invocation.trigger()),
                     () -> assertTrue(invocation.prefixed()));
