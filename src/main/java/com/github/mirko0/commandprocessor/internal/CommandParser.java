@@ -89,6 +89,11 @@ public final class CommandParser {
         CommandDefinition cmdDef = new CommandDefinition();
         cmdDef.setName(cmdName);
         cmdDef.setInstance(command);
+        if (!info.guildId().isEmpty() && info.guildId().isBlank()) {
+            // Blank would otherwise read as "no guild" and register a guild command globally.
+            throw new IllegalArgumentException("Command '" + cmdName + "' (" + clazz.getName()
+                    + ") declares a blank guildId. Leave it out for a global command.");
+        }
         cmdDef.setGuildId(info.guildId());
         cmdDef.setNsfw(info.nsfw());
         cmdDef.setLocalizedNames(info.localizedNames());
